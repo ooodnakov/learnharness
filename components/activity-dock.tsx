@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { ActivityIcon, BotIcon, FileTextIcon, PenToolIcon, PlayIcon, SearchIcon, SquareIcon, WaypointsIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CallUsage, JobKind, JobRecord } from "@/src/core";
@@ -61,6 +62,9 @@ export interface FeedExtraction {
 	/** Unique row id (source id, or "src#i" for chunk jobs). */
 	id: string;
 	chatId: string;
+	/** Front door of the run — only "chat" runs have a session page.
+	 *  Absent on older payloads (treated as a chat link there). */
+	kind?: "chat" | "notes";
 	part?: { i: number; n: number };
 	title: string;
 	phase: string;
@@ -174,6 +178,8 @@ export interface ActivityBlob {
 	jobKind?: JobKind;
 	/** Extraction phase (extracting/auditing/merging/embedding); jobs carry none. */
 	phase?: string;
+	/** Extraction front door; jobs carry none. */
+	kind?: "chat" | "notes";
 	title: string;
 	chatId: string;
 	/** ms epoch — blobs order oldest-first and elapsed counts from it. */
@@ -244,6 +250,7 @@ export function toBlobs(feed: ActivityFeed): ActivityBlob[] {
 			id: run.id,
 			process: "extraction",
 			phase: run.phase,
+			kind: run.kind,
 			title: run.title,
 			chatId: run.chatId,
 			startedAt: run.startedAt,
@@ -254,6 +261,15 @@ export function toBlobs(feed: ActivityFeed): ActivityBlob[] {
 	}
 	blobs.sort((a, b) => a.startedAt - b.startedAt);
 	return blobs;
+}
+
+/** The blob's session target, or null when there is no session page.
+ *  Jobs always belong to a chat; extraction runs only when the CHAT door
+ *  started them — imported-notes runs are source-scoped ("src_…") and
+ *  linking them to /chat/… was the 404. */
+export function sessionHref(blob: ActivityBlob): string | null {
+	if (blob.process === "job") return `/chat/${blob.chatId}`;
+	return blob.kind === "chat" ? `/chat/${blob.chatId}` : null;
 }
 
 /** Elapsed as a compact ticking string: 45s / 3m 04s / 1h 12m. */
@@ -346,8 +362,11 @@ export function ActivitySection({ feed: feedProp }: { feed?: ActivityFeed }) {
 	return (
 		<section data-testid="activity-section" className="border-t border-border px-3 pb-3 pt-2">
 			<div className="mb-1 flex items-center gap-1.5 text-xs uppercase tracking-widest text-muted-foreground/70">
-				<ActivityIcon className="size-3" />
-				Background agents
+				<Link href="/activity" title="Open the background-activity screen" className="flex items-center gap-1.5 rounded transition-colors hover:text-foreground">
+					<ActivityIcon className="size-3" />
+					Background agents
+					<span aria-hidden className="text-muted-foreground/50">›</span>
+				</Link>
 				{blobs.length > 0 && (
 					<span className="ml-auto tabular-nums" data-testid="activity-total-cost" title="Total running cost (inferred)">
 						{planCostLabel(totalCost, subscriptionLabels(blobs.map((blob) => blob.model)))}
@@ -390,6 +409,7 @@ function ActivityBlobRow({
 	onAbort: () => void;
 }) {
 	const Icon = blob.process === "extraction" ? WaypointsIcon : (blob.jobKind && KIND_ICON[blob.jobKind]) || BotIcon;
+	const href = sessionHref(blob);
 	const label =
 		blob.process === "extraction"
 			? `Extraction — ${blob.phase ?? "running"}`
@@ -487,9 +507,11 @@ function ActivityBlobRow({
 								<span className="tabular-nums text-card-foreground">{blob.steps}</span>
 							</div>
 						)}
-						<a href={`/chat/${blob.chatId}`} className="text-primary hover:underline">
-							Open session →
-						</a>
+						{href && (
+							<a href={href} className="text-primary hover:underline">
+								Open session →
+							</a>
+						)}
 					</div>
 					<div className="mt-2 text-muted-foreground/80">
 					{abortState === "failed" && "Abort failed — try again"}

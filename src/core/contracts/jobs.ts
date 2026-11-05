@@ -32,6 +32,10 @@ export interface JobRecord {
 	activity: string;
 	createdAt: string;
 	updatedAt: string;
+	/** ISO — when the worker reached a terminal status. Absent on legacy
+	 *  records and while running. Delivery bookkeeping moves `updatedAt`,
+	 *  never this, so history durations stay honest. */
+	finishedAt?: string;
 	/** The sub-agent's result (steer-artifact payload). */
 	result?: unknown;
 	error?: string;

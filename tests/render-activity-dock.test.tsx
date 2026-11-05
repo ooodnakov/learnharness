@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ActivitySection, formatElapsed, toBlobs, type ActivityFeed, type FeedExtraction } from "../components/activity-dock.tsx";
+import { ActivitySection, formatElapsed, sessionHref, toBlobs, type ActivityFeed, type FeedExtraction } from "../components/activity-dock.tsx";
 import { formatTokens, formatUsd } from "../components/usage-format.ts";
 import { jobCost } from "../src/server/pricing.ts";
 
@@ -57,6 +57,20 @@ describe("activity dock pure layer", () => {
 		assert.equal(blobs.length, 2, "one blob per chunk job");
 		assert.deepEqual(blobs.map((b) => b.id), ["src_a#1", "src_a#2"], "unique row ids — no duplicate React keys");
 		assert.ok(blobs.every((b) => b.chatId === "src_a"), "abort/link identity stays source-scoped");
+	});
+
+	it("session link: jobs and CHAT extraction runs have a page; imported-notes runs do not (the /chat/src_… 404)", () => {
+		const jobBlob = toBlobs({ jobs: [job()], extractions: [] })[0]!;
+		assert.equal(sessionHref(jobBlob), "/chat/c1");
+		const [chatRun, notesRun] = toBlobs({
+			jobs: [],
+			extractions: [
+				{ id: "chat1", chatId: "chat1", kind: "chat", title: "Lesson", phase: "extracting", startedAt: NOW },
+				{ id: "src_a", chatId: "src_a", kind: "notes", title: "notes.md", phase: "extracting", startedAt: NOW },
+			],
+		});
+		assert.equal(sessionHref(chatRun!), "/chat/chat1");
+		assert.equal(sessionHref(notesRun!), null, "a notes source has no session page — the dock must not link to it");
 	});
 
 	it("uses the server's Pi price projection; absent pricing is null, never zero", () => {
@@ -192,6 +206,7 @@ describe("activity section render", () => {
 		const html = renderToStaticMarkup(<ActivitySection feed={{ jobs: [], extractions: [] }} />);
 		assert.match(html, /data-testid="activity-section"/);
 		assert.match(html, /Background agents/);
+		assert.match(html, /href="\/activity"/, "the header links to the activity screen");
 		assert.doesNotMatch(html, /activity-blob-(job|extraction)/, "no rows while idle");
 		assert.doesNotMatch(html, /activity-total-cost/, "the cost span is population, not decoration");
 	});
