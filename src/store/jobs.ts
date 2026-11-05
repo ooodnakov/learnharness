@@ -63,6 +63,9 @@ function updateJob(id: string, patch: JobPatch): JobRecord | null {
 	const record = getJob(id);
 	if (!record) return null;
 	const next: JobRecord = { ...record, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
+	// The worker's terminal timestamp is stamped once and never moves with
+	// later bookkeeping (delivery acks bump updatedAt).
+	if (next.status !== "running" && next.finishedAt === undefined) next.finishedAt = next.updatedAt;
 	writeFileAtomicSync(jobFile(id), JSON.stringify(next, null, "\t"), { allowInPlaceFallback: true });
 	// EVERY write, not just status flips: progress-line updates must reach
 	// the dispatch cards (the view debounces the fetch bursts). A missing id

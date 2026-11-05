@@ -21,6 +21,15 @@
 
 import { extractionStatuses, type ExtractionPhase } from "../agent/subagents/extraction.ts";
 import { chatStore } from "../store/chats.ts";
+import { graphStore } from "../store/graph.ts";
+import {
+	buildActivityHistory,
+	historyLimit,
+	type ActivityCenter,
+	type ActivityLiveExtraction,
+	type ExtractionHistoryInput,
+	type JobHistoryInput,
+} from "../core/activity-history.ts";
 import { graphRevision } from "./graph.ts";
 import { catalogContextLimits } from "./model-catalog.ts";
 import { listJobs } from "./jobs.ts";
@@ -49,7 +58,12 @@ export interface ActivityJob extends JobRecord {
  *  "· i/N" part suffix. */
 export interface ActivityExtraction {
 	id: string;
+	/** The run's source key: a real chat id (chat door) or "src_…" (notes
+	 *  door). Only the chat kind has a session page. */
 	chatId: string;
+	/** Which front door started the run (2026-11): the dock renders the
+	 *  session link only for "chat" — /chat/src_… 404s. */
+	kind: "chat" | "notes";
 	part?: { i: number; n: number };
 	title: string;
 	phase: ExtractionPhase;
@@ -66,15 +80,11 @@ export interface ActivityExtraction {
  *  graph changed underneath me" (a merge landed, a deletion purged) and
  *  refetch clusters/layout. Reads never move it; the DELETE response
  *  returns the same stamp. */
-export function activityFeed(): {
-	jobs: ActivityJob[];
-	extractions: ActivityExtraction[];
-	graphRevision: number;
-} {
-	const chats = chatStore.listChats();
+/** Running sub-agent jobs across every chat (the dock + screen live rows). */
+function runningJobs(): ActivityJob[] {
 	const limits = catalogContextLimits();
 	const jobs: ActivityJob[] = [];
-	for (const chat of chats) {
+	for (const chat of chatStore.listChats()) {
 		for (const job of listJobs(chat.id)) {
 			if (job.status === "running") {
 				jobs.push({
@@ -86,9 +96,17 @@ export function activityFeed(): {
 			}
 		}
 	}
-	const extractions: ActivityExtraction[] = extractionStatuses().map((run) => ({
+	// oldest-first on last activity: the stable blob order (ISO strings sort chronologically)
+	jobs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+	return jobs;
+}
+
+/** The feed's extraction rows (the dock's compact shape). */
+function runningExtractions(): ActivityExtraction[] {
+	return extractionStatuses().map((run) => ({
 		id: run.part ? `${run.chatId}#${run.part.i}` : run.chatId,
 		chatId: run.chatId,
+		kind: run.kind,
 		part: run.part,
 		// The run's own label never reaches this feed (unlike the graph
 		// status route) — the chat store's title, or the bare id for notes
@@ -99,11 +117,68 @@ export function activityFeed(): {
 		phase: run.phase,
 		startedAt: run.startedAt,
 	}));
-	// oldest-first on last activity: the stable blob order (ISO strings sort chronologically)
-	jobs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+}
+
+export function activityFeed(): {
+	jobs: ActivityJob[];
+	extractions: ActivityExtraction[];
+	graphRevision: number;
+} {
 	return {
-		jobs,
-		extractions: extractions.sort((a, b) => a.startedAt - b.startedAt),
+		jobs: runningJobs(),
+		extractions: runningExtractions().sort((a, b) => a.startedAt - b.startedAt),
 		graphRevision: graphRevision(),
+	};
+}
+
+/** THE ACTIVITY SCREEN'S payload (2026-11): live rows with the registry's
+ *  stage usage (the dock omits it) + the persisted run history — chat and
+ *  notes extraction usage from their records, and every terminal
+ *  sub-agent job. Read-only; no new storage. */
+export function activityCenter(limit = 50, offset = 0): ActivityCenter {
+	const extractions: ActivityLiveExtraction[] = extractionStatuses().map((run) => ({
+		id: run.part ? `${run.chatId}#${run.part.i}` : run.chatId,
+		chatId: run.chatId,
+		kind: run.kind,
+		...(run.label ? { label: run.label } : {}),
+		...(run.part ? { part: run.part } : {}),
+		title:
+			(run.label ?? chatStore.getChat(run.chatId)?.title ?? run.chatId) +
+			(run.part ? ` · ${run.part.i}/${run.part.n}` : ""),
+		phase: run.phase,
+		startedAt: run.startedAt,
+		usage: run.usage,
+	}));
+	const extractionHistory: ExtractionHistoryInput[] = [];
+	const jobHistory: JobHistoryInput[] = [];
+	for (const summary of chatStore.listChats()) {
+		const record = chatStore.getChat(summary.id);
+		if (!record) continue;
+		for (const usage of record.extractions ?? [])
+			extractionHistory.push({ sourceId: record.id, kind: "chat", title: record.title ?? record.id, usage });
+		for (const job of listJobs(summary.id))
+			jobHistory.push({ job, title: summary.title ?? summary.id, costUsd: jobCost(job) });
+	}
+	for (const source of graphStore.readSources()) {
+		for (const usage of source.extractions ?? [])
+			extractionHistory.push({
+				sourceId: source.id,
+				kind: "notes",
+				title: source.filePath,
+				usage,
+				...(source.progress
+					? { progress: { linesDone: source.progress.linesDone, chunksDone: source.progress.chunksDone } }
+					: {}),
+			});
+	}
+	const page = buildActivityHistory(
+		{ extractions: extractionHistory, jobs: jobHistory, nodes: graphStore.readNodes(), chains: graphStore.readChains() },
+		{ offset, limit: historyLimit(limit) },
+	);
+	return {
+		jobs: runningJobs(),
+		extractions,
+		history: page.entries,
+		total: page.total,
 	};
 }

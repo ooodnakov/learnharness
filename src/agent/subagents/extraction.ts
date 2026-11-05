@@ -898,6 +898,9 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		if (!run) return; // not running (tests driving stages directly)
 		run.usage[stage] ??= { model, steps: [] };
 		run.usage[stage]!.steps.push(usage);
+		// Live usage consumers (the activity screen) read the registry; a
+		// billed step inside an unchanged phase must announce itself.
+		emit("activity-changed", {});
 	}
 
 	/** SERIALIZED AUDIT (owner 2026-09-28): the auditor explores the LIVE
